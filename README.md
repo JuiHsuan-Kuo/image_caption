@@ -13,7 +13,7 @@ This is a simple implementation of image caption based on tf.Estimator
 
 2. cd image_caption 
 
-3. download coco image caption annotations and images from [`here`](http://cocodataset.org/#download). put them in the annotations dir and images dir.
+3. download coco image caption annotations and images from [`here`](http://cocodataset.org/#download). put them in the directories called `annotations` and `images`.
 
 4. create symbolic link
 ```
