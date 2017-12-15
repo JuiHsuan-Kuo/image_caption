@@ -1,7 +1,7 @@
 #! /usr/bin/env bash
-python main.py \
-    --data_dir /media/VSlab3/fionakuo/CV_FINAL/data \
-    --model_dir /media/VSlab3/fionakuo/CV_FINAL/exp \
+CUDA_VISIBLE_DEVICES='3' python main.py \
+    --data_dir ./data/data \
+    --model_dir ./data/exp \
     --mode inference \
-    --vocab /media/VSlab3/fionakuo/CV_FINAL/data/vocab.pkl \
-    --predict_image test.jpg 
+    --vocab ./data/data/vocab.pkl \
+    --predict_image test.jpg
