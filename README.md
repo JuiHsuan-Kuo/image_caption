@@ -11,9 +11,9 @@ This is a simple implementation of image caption, estimator_version is another i
 ## simple step
 1. git clone  
 
-2. cd image_caption 
+2. download coco image caption annotations and images from [`here`](http://cocodataset.org/#download). name `annotations` and `images` respectively and put them in the same directory.
 
-3. download coco image caption annotations and images from [`here`](http://cocodataset.org/#download). put them in the directories called `annotations` and `images`.
+3. cd image_caption 
 
 4. create symbolic link
 ```
