@@ -1,6 +1,6 @@
 # image_caption
 
-This is a simple implementation of image caption based on tf.Estimator 
+This is a simple implementation of image caption, estimator_version is another implementation which is based on tf.Estimator 
 
 ## Installation
 1. python 3.6
@@ -34,4 +34,3 @@ sh inference.sh
 ```
 it will produce a caption of the image  
 
-8. if you want to build different networks, plase inherit the caption model in the model.py and modify `rnn_network` or `model_fn` functions.
