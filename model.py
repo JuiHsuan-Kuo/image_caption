@@ -1,9 +1,9 @@
 import tensorflow as tf
 import tensorflow.contrib.rnn as rnn
-import collections
 import numpy as np
 import os
 import utils
+from data_loader import Sampler, Pretrain_Loader
 
 
 class RNNAgent:
@@ -28,36 +28,13 @@ class RNNAgent:
 
         self.summary_writer = tf.summary.FileWriter(self.summary_dir, self.sess.graph)
 
-    def _data_loader(self, captions, features, num_epochs=1, batch_size=128, shuffle=False):
-        data = collections.namedtuple('Data', 'iterator, captions, features')
-
-        dataset = tf.data.Dataset.from_tensor_slices((captions, features))
-        if shuffle:
-            dataset = dataset.shuffle(buffer_size=10000)
-
-        dataset = dataset.repeat(num_epochs)
-        dataset = dataset.batch(batch_size)
-        iterator = dataset.make_initializable_iterator()
-        next_captions, next_features = iterator.get_next()
-
-        return data(
-            iterator=iterator,
-            captions=next_captions,
-            features=next_features
-        )
-
-    def learn(self, train_captions, train_features, val_captions, val_features):
+    def learn(self, train_dict_data, val_dict_data):
         # First step: Prepare data for training
 
-        # prepare data to feed
-        train_captions_tf = tf.placeholder(dtype=train_captions.dtype,
-                                           shape=[None, train_captions.shape[1]])
-        train_features_tf = tf.placeholder(dtype=train_features.dtype,
-                                           shape=[None, train_features.shape[1]])
-        val_captions_tf = tf.placeholder(dtype=val_captions.dtype,
-                                         shape=[None, val_captions.shape[1]])
-        val_features_tf = tf.placeholder(dtype=val_features.dtype,
-                                         shape=[None, val_features.shape[1]])
+        train_data_loader = Pretrain_Loader(train_dict_data, self.sess)
+        print('Create pre-trained training data loader...')
+        val_data_loader = Pretrain_Loader(val_dict_data, self.sess)
+        print('Create pre-trained validation data loader...')
 
         # prepare summary for tensorboard
         g_train_loss = tf.placeholder(dtype=tf.float32, shape=())
@@ -70,13 +47,12 @@ class RNNAgent:
 
         # Set up data
 
-        train_data = self._data_loader(train_captions_tf, train_features_tf, self.params.epochs_per_eval,
-                                       self.params.batch_size, shuffle=True)
-        val_data = self._data_loader(val_captions_tf, val_features_tf, batch_size=self.params.batch_size)
+        train_data_loader.create(self.params.epochs_per_eval, self.params.batch_size, shuffle=True)
+        val_data_loader.create(batch_size=self.params.batch_size, shuffle=False)
 
         self.sess.run(tf.global_variables_initializer())
 
-        # if pretrain, reload checkpoints
+        # if use pre-trained model, reload checkpoints
         if self.params.pretrained:
             checkpoint = tf.train.latest_checkpoint(self.params.model_dir) \
                 if not self.params.checkpoint else self.params.checkpoint
@@ -85,17 +61,16 @@ class RNNAgent:
                 print("Loading model checkpoint {}...\n".format(checkpoint))
                 self.saver.restore(self.sess, checkpoint)
             else:
-                raise ValueError('Can not find the checkpoint')
+                raise FileNotFoundError('Can not find the checkpoint')
 
         for _ in range(self.params.num_epochs // self.params.epochs_per_eval):
-            self.sess.run(train_data.iterator.initializer, feed_dict={train_captions_tf: train_captions,
-                                                                      train_features_tf: train_features})
-            self.sess.run(val_data.iterator.initializer, feed_dict={val_captions_tf: val_captions,
-                                                                    val_features_tf: val_features})
+            train_data_loader.initialize()
+            val_data_loader.initialize()
             while True:
                 total_train_loss = []
                 try:
-                    train_obs_batch, train_acs_batch = self.sess.run([train_data.captions, train_data.features])
+                    train_obs_batch, train_acs_batch = self.sess.run([train_data_loader.batch_captions,
+                                                                      train_data_loader.batch_features])
                     train_loss, step = self.rnn.train(train_obs_batch, train_acs_batch)
                     total_train_loss.append(train_loss)
                     if step % self.params.summary_freq == 0:
@@ -111,7 +86,8 @@ class RNNAgent:
                     total_val_loss = []
                     while True:
                         try:
-                            val_obs_batch, val_acs_batch = self.sess.run([val_data.captions, val_data.features])
+                            val_obs_batch, val_acs_batch = self.sess.run([val_data_loader.batch_captions,
+                                                                          val_data_loader.batch_features])
                             val_loss = self.rnn.eval(val_obs_batch, val_acs_batch)
                             total_val_loss.append(val_loss)
                         except tf.errors.OutOfRangeError:
@@ -132,12 +108,12 @@ class RNNAgent:
             if not self.params.checkpoint else self.params.checkpoint
 
         if not checkpoint:
-            raise ValueError('Checkpoint in not found in {}'.format(self.params.model_dir))
+            raise FileNotFoundError('Checkpoint in not found in {}'.format(self.params.model_dir))
         else:
             print("Loading model checkpoint {}...".format(checkpoint))
             self.saver.restore(self.sess, checkpoint)
-        feature_exctrator = utils.feature_extractor('VGG19')
-        features = utils.feature_extraction(feature_exctrator, image)
+        feature_extractor = utils.feature_extractor('VGG19')
+        features = utils.feature_extraction(feature_extractor, image)
 
         predicted_sequence = self.rnn.predict(features)
 
@@ -241,7 +217,7 @@ class RNN:
 
         return loss
 
-    def _model(self, features, captions=None, is_training=True):
+    def _model(self, features, captions=None, sample=True):
         with tf.variable_scope('model', reuse=tf.AUTO_REUSE):
             image_embeddings = self._feature_embedding(features)
             batch_size = tf.shape(features)[0]
@@ -249,7 +225,7 @@ class RNN:
             zero_state = lstm_cell.zero_state(batch_size, dtype=tf.float32)
             _, initial_state = lstm_cell(image_embeddings, zero_state)
 
-            if is_training:
+            if not sample:
                 assert captions is not None
                 wordvec = self._word_embedding(captions)
                 outputs, _ = tf.nn.dynamic_rnn(lstm_cell, wordvec, initial_state=initial_state)
@@ -265,7 +241,7 @@ class RNN:
                     output, state = lstm_cell(wordvec, state)
 
                     logits = self._logits_embedding(output)
-                    sample_word = tf.squeeze(tf.argmax(logits, axis=1))
+                    sample_word = tf.squeeze(tf.multinomial(logits, 1))
                     word_list.append(sample_word)
                     outputs = tf.stack(word_list)
 
@@ -273,27 +249,28 @@ class RNN:
 
     def _build_rnn(self):
         # Output
-        train_logits = self._model(self.features, self.caption_in, is_training=True)
+        train_logits = self._model(self.features, self.caption_in, sample=False)
 
         # loss
         loss = self._loss_function(logits=train_logits, labels=self.caption_out)
         # Optimizer
 
+        update_params = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope='generator')
+
+        '''
         def _decay_fn(decay_learning_rate, decay_global_step):
             return tf.train.exponential_decay(learning_rate=decay_learning_rate,
                                               global_step=decay_global_step,
                                               decay_steps=self.params.decay_step,
                                               decay_rate=self.params.decay_rate)
+        '''
 
-        train_op = tf.contrib.layers.optimize_loss(
-            loss=loss,
-            global_step=self.global_step,
-            learning_rate=0.001,
-            optimizer='Adam',
-            learning_rate_decay_fn=_decay_fn
-        )
+        optimizer = tf.train.AdamOptimizer(1e-4)
+        train_op = optimizer.minimize(loss=loss,
+                                      global_step=self.global_step,
+                                      var_list=update_params)
 
-        predict_sequence = self._model(self.features, is_training=False)
+        predict_sequence = self._model(self.features, sample=True)
 
         return train_logits, loss, train_op, predict_sequence
 
@@ -326,55 +303,116 @@ class RNN:
 
 
 class Discriminator:
-    def __init__(self, env, sess, global_step):
-        self.env = env
+    def __init__(self, sess, global_step, vocab, max_time=16, hidden_dim=512, embed_dim=512):
         self.sess = sess
-        self.acs_dim = env.action_space.shape[0]
-        self.obs_dim = env.observation_space.shape[0]
+
+        # vocabulary: word to index dict
+        self.vocab = vocab
+
+        # inverse vocabulary: index to word dict
+        self.idx2word = {i: w for w, i in vocab.items()}
+
+        self.start = vocab['<START>']
+
+        self.T = max_time
+
+        self.L = hidden_dim
+
+        self.E = embed_dim
+
+        self.V = len(vocab)
+
+        self.initializer = tf.random_uniform_initializer(minval=-1.0, maxval=1.0)
 
         with tf.variable_scope('discriminator'):
-            self.acs_f = tf.placeholder(dtype=env.action_space.high.dtype,
-                                        shape=[None, self.acs_dim])
-            self.acs_r = tf.placeholder(dtype=env.action_space.high.dtype,
-                                        shape=[None, self.acs_dim])
-            self.obs_f = tf.placeholder(dtype=env.observation_space.high.dtype,
-                                        shape=[None, self.obs_dim])
-            self.obs_r = tf.placeholder(dtype=env.observation_space.high.dtype,
-                                        shape=[None, self.obs_dim])
-            self.input_r = tf.concat([self.obs_r, self.acs_r], axis=1)
-            self.input_f = tf.concat([self.obs_f, self.acs_f], axis=1)
+            self.features = tf.placeholder(dtype=tf.float32,
+                                           shape=[None, 4096])
+            # captions in real
+            self.captions_R = tf.placeholder(dtype=tf.int32,
+                                             shape=[None, None])
+            # captions from G
+            self.captions_G = tf.placeholder(dtype=tf.int32,
+                                             shape=[None, None])
+            # captions from different image
+            self.captions_F = tf.placeholder(dtype=tf.int32,
+                                             shape=[None, None])
+
             self.global_step = global_step
 
             self.loss, self.train_op = self._build_discriminator()
 
-            tf.summary.scalar('d_loss', self.loss)
+    def _word_embedding(self, inputs):
+        # TODO: issue if wordvec weights of g and d are the same
+        """
 
-    def _model(self, inputs):
+        :param inputs: captions, (batch_size)
+        :return: embedding wordvec, (batch_size, time_step, embedding_size)
+        """
+        with tf.variable_scope('word_embedding', reuse=tf.AUTO_REUSE):
+            w_embed = tf.get_variable(name='embedding_weights', shape=[self.V, self.E],
+                                      initializer=self.initializer)
+            wordvec = tf.nn.embedding_lookup(w_embed, inputs)
+        return wordvec
+
+    def _feature_embedding(self, inputs):
+        with tf.variable_scope('feature_embedding') as scope:
+            image_embeddings = tf.contrib.layers.fully_connected(
+                inputs=inputs,
+                num_outputs=self.E,
+                activation_fn=None,
+                biases_initializer=None,
+                scope=scope)
+
+        return image_embeddings
+
+    def _model(self, features, captions):
+        """
+
+        :param captions: [batch_size, time_step]
+        :param features: [batch_size, 4096]
+        :return: final LSTM output
+        """
         with tf.variable_scope('model', reuse=tf.AUTO_REUSE):
-            net = tf.layers.dense(inputs=inputs,
-                                  units=100,
-                                  activation=tf.nn.tanh)
-            net = tf.layers.dense(inputs=net,
-                                  units=100,
-                                  activation=tf.nn.tanh)
-            net = tf.layers.dense(inputs=net,
-                                  units=1)
-        return net
+            tf.concat([tf.expand_dims(self.start,0)[None, :], captions], axis=1)
+            lstm_cell = rnn.BasicLSTMCell(self.L)
+
+            wordvec = self._word_embedding(captions)
+            lstm_output, _ = tf.nn.dynamic_rnn(lstm_cell, wordvec, dtype=tf.float32)
+            lstm_output = lstm_output[:, -1, :] # get final output
+            image_embeddings = self._feature_embedding(features)
+
+            output = tf.nn.sigmoid(tf.tensordot(lstm_output, image_embeddings, axes=[[1], [1]]))
+
+        return output
 
     def _build_discriminator(self):
-        p_r = self._model(self.input_r)
-        p_f = self._model(self.input_f)
-        loss_r = tf.log(p_r + 1e-12)
-        loss_f = tf.log((1 - p_f) + 1e-12)
-        d_loss = -(loss_r + loss_f)
-        optimizer = tf.train.AdamOptimizer()
-        train_op = optimizer.minimize(d_loss, global_step=self.global_step)
+        s_r = self._model(self.features, self.captions_R)
+        s_g = self._model(self.features, self.captions_G)
+        s_f = self._model(self.features, self.captions_F)
+
+        loss_r = tf.log(s_r + 1e-12)
+        loss_g = tf.log((1 - s_g) + 1e-12)
+        loss_f = tf.log((1-s_f) + 1e-12)
+
+        d_loss = -(loss_r + loss_f + loss_g)  # negative because of maximization
+        optimizer = tf.train.AdamOptimizer(1e-4)
+        update_params = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope='discriminator')
+        train_op = optimizer.minimize(d_loss, var_list=update_params)
 
         return d_loss, train_op
 
-    def train(self, obs_r, obs_f, acs_r, acs_f):
+    def train(self, features, captions_r, captions_g, captions_f):
 
-        _ = self.sess.run(self.train_op, feed_dict={self.obs_r: obs_r,
-                                                    self.obs_f: obs_f,
-                                                    self.acs_r: acs_r,
-                                                    self.acs_f: acs_f})
+        run_op = [self.loss, self.train_op]
+        loss, _ = self.sess.run(run_op, feed_dict={self.captions_R: captions_r,
+                                                   self.captions_F: captions_f,
+                                                   self.captions_G: captions_g,
+                                                   self.features: features})
+        return loss
+
+    def eval(self, features, captions_r, captions_g, captions_f):
+
+        return self.sess.run(self.loss, feed_dict={self.captions_R: captions_r,
+                                                   self.captions_F: captions_f,
+                                                   self.captions_G: captions_g,
+                                                   self.features: features})

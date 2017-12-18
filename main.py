@@ -1,5 +1,5 @@
 import tensorflow as tf
-
+import os
 import utils
 import model
 
@@ -34,13 +34,13 @@ def main(unused_argv):
     caption_model = model.RNNAgent(sess, vocab, FLAGS)
 
     if FLAGS.mode == 'train':
-        coco_data_train = utils.load_coco(FLAGS.data_dir, 'train')
-        coco_data_val = utils.load_coco(FLAGS.data_dir, 'val')
 
-        print('Successfully load data...')
+        coco_data_train = utils.load_pickle(os.path.join(FLAGS.data_dir, 'train_dict.pkl'))
+        coco_data_val = utils.load_pickle(os.path.join(FLAGS.data_dir, 'val_dict.pkl'))
 
-        caption_model.learn(coco_data_train.captions, coco_data_train.features,
-                            coco_data_val.captions, coco_data_val.features)
+        print('Successfully loading data...')
+
+        caption_model.learn(coco_data_train, coco_data_val)
 
     elif FLAGS.mode == 'inference':
         assert FLAGS.predict_image is not None
@@ -48,7 +48,5 @@ def main(unused_argv):
         caption_model.inference(FLAGS.predict_image)
 
 
-
 if __name__ == '__main__':
-    tf.logging.set_verbosity(tf.logging.INFO)
     tf.app.run()

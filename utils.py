@@ -2,12 +2,11 @@ import pickle
 import collections
 import os
 import json
-import tensorflow as tf
 import numpy as np
-import math
 from keras.preprocessing import image as Image
 from keras.applications.vgg19 import VGG19
 from keras.models import Model
+
 
 def save_pickle(data, path):
     with open(path, 'wb') as f:
@@ -41,6 +40,7 @@ def load_coco(data_dir, mode):
         raise ValueError('mode is not provided')
 
     return data
+
 
 def feature_extractor(model_type=None):
 
